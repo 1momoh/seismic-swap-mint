@@ -1,6 +1,6 @@
 // Deployed contract addresses on Seismic Testnet
 export const CONTRACT_ADDRESSES = {
-  FAUCET: "0x539fB9Dfa9405984a3E22b418aB49A3749196Feb",
+  FAUCET: "0xB728c86D6240F196ac70659c4849E8379C56c76C",
   SWAP: "0x054340eA707Bb682ba5C2bC57E134bd689550DB8",
 } as const;
 
