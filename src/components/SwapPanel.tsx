@@ -1,32 +1,54 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { TOKENS, Token, calculateSwapOutput } from "@/config/chain";
+import { CONTRACT_ADDRESSES, ERC20_ABI, SWAP_ABI } from "@/config/contracts";
 import { useWallet } from "@/context/WalletContext";
 import TokenSelector from "@/components/TokenSelector";
 import { ArrowDownUp, Loader2, AlertTriangle, Fuel } from "lucide-react";
 import { motion } from "framer-motion";
 import { useToast } from "@/hooks/use-toast";
+import { Contract, parseUnits, formatUnits } from "ethers";
 
 const SwapPanel = () => {
-  const { address, isCorrectNetwork } = useWallet();
+  const { address, isCorrectNetwork, provider } = useWallet();
   const { toast } = useToast();
   const [tokenIn, setTokenIn] = useState<Token>(TOKENS[0]);
   const [tokenOut, setTokenOut] = useState<Token>(TOKENS[1]);
   const [amountIn, setAmountIn] = useState("");
   const [isSwapping, setIsSwapping] = useState(false);
+  const [balances, setBalances] = useState<Record<string, string>>({});
+  const [isLoadingBalances, setIsLoadingBalances] = useState(false);
 
   const slippage = 0.005;
 
-  // Mock balances
-  const [balances, setBalances] = useState<Record<string, number>>({});
+  // Fetch on-chain balances for all tokens
+  const fetchBalances = useCallback(async () => {
+    if (!address || !provider) return;
+    setIsLoadingBalances(true);
+    try {
+      const signer = await provider.getSigner();
+      const results: Record<string, string> = {};
+      await Promise.all(
+        TOKENS.map(async (token) => {
+          try {
+            const contract = new Contract(token.address, ERC20_ABI, signer);
+            const bal = await contract.balanceOf(address);
+            results[token.symbol] = formatUnits(bal, token.decimals);
+          } catch {
+            results[token.symbol] = "0";
+          }
+        })
+      );
+      setBalances(results);
+    } catch {
+      // silent
+    } finally {
+      setIsLoadingBalances(false);
+    }
+  }, [address, provider]);
 
   useEffect(() => {
-    if (address) {
-      // Simulate loading balances from localStorage (minted from faucet)
-      const stored = localStorage.getItem(`balances_${address}`);
-      if (stored) setBalances(JSON.parse(stored));
-      else setBalances({});
-    }
-  }, [address]);
+    fetchBalances();
+  }, [fetchBalances]);
 
   const swapResult = useMemo(() => {
     const val = parseFloat(amountIn);
@@ -34,10 +56,11 @@ const SwapPanel = () => {
     return calculateSwapOutput(val, tokenIn.symbol, tokenOut.symbol, slippage);
   }, [amountIn, tokenIn, tokenOut]);
 
-  const inputBalance = balances[tokenIn.symbol] || 0;
+  const inputBalance = parseFloat(balances[tokenIn.symbol] || "0");
   const insufficientBalance = parseFloat(amountIn) > inputBalance;
 
-  const canSwap = address && isCorrectNetwork && amountIn && parseFloat(amountIn) > 0 && !insufficientBalance && !isSwapping;
+  const canSwap =
+    address && isCorrectNetwork && amountIn && parseFloat(amountIn) > 0 && !insufficientBalance && !isSwapping;
 
   const handleFlip = () => {
     setTokenIn(tokenOut);
@@ -46,26 +69,44 @@ const SwapPanel = () => {
   };
 
   const handleSwap = async () => {
-    if (!canSwap || !swapResult) return;
+    if (!canSwap || !swapResult || !provider) return;
     setIsSwapping(true);
 
-    // Simulate transaction
-    await new Promise((r) => setTimeout(r, 2000));
+    try {
+      const signer = await provider.getSigner();
+      const amountInWei = parseUnits(amountIn, tokenIn.decimals);
 
-    const newBalances = { ...balances };
-    newBalances[tokenIn.symbol] = (newBalances[tokenIn.symbol] || 0) - parseFloat(amountIn);
-    newBalances[tokenOut.symbol] = (newBalances[tokenOut.symbol] || 0) + swapResult.amountOut;
+      // Approve tokenIn for the Swap contract
+      const tokenInContract = new Contract(tokenIn.address, ERC20_ABI, signer);
+      const allowance = await tokenInContract.allowance(address, CONTRACT_ADDRESSES.SWAP);
+      if (allowance < amountInWei) {
+        const approveTx = await tokenInContract.approve(CONTRACT_ADDRESSES.SWAP, amountInWei);
+        toast({ title: "Approving...", description: `Approving ${tokenIn.symbol} for swap` });
+        await approveTx.wait();
+      }
 
-    setBalances(newBalances);
-    if (address) localStorage.setItem(`balances_${address}`, JSON.stringify(newBalances));
+      // Execute swap
+      const swapContract = new Contract(CONTRACT_ADDRESSES.SWAP, SWAP_ABI, signer);
+      const tx = await swapContract.swap(tokenIn.address, tokenOut.address, amountInWei);
+      toast({ title: "Swapping...", description: "Transaction submitted, waiting for confirmation" });
+      await tx.wait();
 
-    toast({
-      title: "Swap Successful!",
-      description: `Swapped ${amountIn} ${tokenIn.symbol} → ${swapResult.amountOut.toFixed(4)} ${tokenOut.symbol}`,
-    });
+      toast({
+        title: "Swap Successful!",
+        description: `Swapped ${amountIn} ${tokenIn.symbol} → ${tokenOut.symbol}`,
+      });
 
-    setAmountIn("");
-    setIsSwapping(false);
+      setAmountIn("");
+      await fetchBalances();
+    } catch (err: any) {
+      toast({
+        title: "Swap Failed",
+        description: err?.reason || err?.message || "Transaction failed",
+        variant: "destructive",
+      });
+    } finally {
+      setIsSwapping(false);
+    }
   };
 
   return (
@@ -87,7 +128,7 @@ const SwapPanel = () => {
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs text-muted-foreground">You pay</span>
             <span className="text-xs text-muted-foreground">
-              Balance: {inputBalance.toFixed(2)}
+              Balance: {isLoadingBalances ? "..." : parseFloat(balances[tokenIn.symbol] || "0").toFixed(2)}
             </span>
           </div>
           <div className="flex items-center gap-3">
@@ -122,7 +163,7 @@ const SwapPanel = () => {
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs text-muted-foreground">You receive</span>
             <span className="text-xs text-muted-foreground">
-              Balance: {(balances[tokenOut.symbol] || 0).toFixed(2)}
+              Balance: {isLoadingBalances ? "..." : parseFloat(balances[tokenOut.symbol] || "0").toFixed(2)}
             </span>
           </div>
           <div className="flex items-center gap-3">

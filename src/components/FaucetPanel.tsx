@@ -1,36 +1,57 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { TOKENS, Token, FAUCET_MAX_MINT, FAUCET_COOLDOWN_MS } from "@/config/chain";
+import { CONTRACT_ADDRESSES, FAUCET_ABI } from "@/config/contracts";
 import { useWallet } from "@/context/WalletContext";
 import { Droplets, Loader2, Clock, CheckCircle } from "lucide-react";
 import { motion } from "framer-motion";
 import { useToast } from "@/hooks/use-toast";
+import { Contract } from "ethers";
 
 interface CooldownInfo {
-  lastMint: number;
-  remaining: number;
+  lastMint: number; // unix timestamp in seconds from contract
+  remaining: number; // ms remaining
 }
 
 const FaucetPanel = () => {
-  const { address, isCorrectNetwork } = useWallet();
+  const { address, isCorrectNetwork, provider } = useWallet();
   const { toast } = useToast();
   const [mintingToken, setMintingToken] = useState<string | null>(null);
   const [cooldowns, setCooldowns] = useState<Record<string, CooldownInfo>>({});
+  const [isLoadingCooldowns, setIsLoadingCooldowns] = useState(false);
 
-  // Load cooldowns from localStorage
-  useEffect(() => {
-    if (!address) return;
-    const stored = localStorage.getItem(`cooldowns_${address}`);
-    if (stored) {
-      const parsed = JSON.parse(stored);
-      const updated: Record<string, CooldownInfo> = {};
+  // Fetch on-chain cooldowns for all tokens
+  const fetchCooldowns = useCallback(async () => {
+    if (!address || !provider) return;
+    setIsLoadingCooldowns(true);
+    try {
+      const signer = await provider.getSigner();
+      const faucet = new Contract(CONTRACT_ADDRESSES.FAUCET, FAUCET_ABI, signer);
       const now = Date.now();
-      Object.keys(parsed).forEach((sym) => {
-        const remaining = Math.max(0, parsed[sym].lastMint + FAUCET_COOLDOWN_MS - now);
-        updated[sym] = { lastMint: parsed[sym].lastMint, remaining };
-      });
-      setCooldowns(updated);
+      const results: Record<string, CooldownInfo> = {};
+
+      await Promise.all(
+        TOKENS.map(async (token) => {
+          try {
+            const lastMintBN = await faucet.lastMint(address, token.address);
+            const lastMintMs = Number(lastMintBN) * 1000; // convert seconds to ms
+            const remaining = Math.max(0, lastMintMs + FAUCET_COOLDOWN_MS - now);
+            results[token.symbol] = { lastMint: lastMintMs, remaining };
+          } catch {
+            results[token.symbol] = { lastMint: 0, remaining: 0 };
+          }
+        })
+      );
+      setCooldowns(results);
+    } catch {
+      // silent
+    } finally {
+      setIsLoadingCooldowns(false);
     }
-  }, [address]);
+  }, [address, provider]);
+
+  useEffect(() => {
+    fetchCooldowns();
+  }, [fetchCooldowns]);
 
   // Tick cooldowns
   useEffect(() => {
@@ -56,7 +77,7 @@ const FaucetPanel = () => {
   };
 
   const handleMint = async (token: Token) => {
-    if (!address || !isCorrectNetwork) return;
+    if (!address || !isCorrectNetwork || !provider) return;
 
     const cd = cooldowns[token.symbol];
     if (cd && cd.remaining > 0) {
@@ -69,34 +90,30 @@ const FaucetPanel = () => {
     }
 
     setMintingToken(token.symbol);
-    // Simulate minting
-    await new Promise((r) => setTimeout(r, 1500));
+    try {
+      const signer = await provider.getSigner();
+      const faucet = new Contract(CONTRACT_ADDRESSES.FAUCET, FAUCET_ABI, signer);
 
-    // Update balances
-    const balKey = `balances_${address}`;
-    const balances = JSON.parse(localStorage.getItem(balKey) || "{}");
-    balances[token.symbol] = (balances[token.symbol] || 0) + FAUCET_MAX_MINT;
-    localStorage.setItem(balKey, JSON.stringify(balances));
+      const tx = await faucet.mint(token.address);
+      toast({ title: "Minting...", description: `Transaction submitted for ${token.symbol}` });
+      await tx.wait();
 
-    // Update cooldowns
-    const now = Date.now();
-    const newCooldowns = {
-      ...cooldowns,
-      [token.symbol]: { lastMint: now, remaining: FAUCET_COOLDOWN_MS },
-    };
-    setCooldowns(newCooldowns);
-    const cooldownStore: Record<string, { lastMint: number }> = {};
-    Object.keys(newCooldowns).forEach((sym) => {
-      cooldownStore[sym] = { lastMint: newCooldowns[sym].lastMint };
-    });
-    localStorage.setItem(`cooldowns_${address}`, JSON.stringify(cooldownStore));
+      toast({
+        title: "Tokens Minted!",
+        description: `${FAUCET_MAX_MINT} ${token.symbol} added to your wallet.`,
+      });
 
-    toast({
-      title: "Tokens Minted!",
-      description: `${FAUCET_MAX_MINT} ${token.symbol} added to your wallet.`,
-    });
-
-    setMintingToken(null);
+      // Refresh cooldowns from chain
+      await fetchCooldowns();
+    } catch (err: any) {
+      toast({
+        title: "Mint Failed",
+        description: err?.reason || err?.message || "Transaction failed",
+        variant: "destructive",
+      });
+    } finally {
+      setMintingToken(null);
+    }
   };
 
   return (
@@ -160,7 +177,7 @@ const FaucetPanel = () => {
                     )}
                     <button
                       onClick={() => handleMint(token)}
-                      disabled={isMinting || !!onCooldown}
+                      disabled={isMinting || !!onCooldown || isLoadingCooldowns}
                       className="px-4 py-2 rounded-lg text-xs font-semibold transition-all disabled:opacity-40 disabled:cursor-not-allowed bg-primary/10 text-primary hover:bg-primary/20 border border-primary/20"
                     >
                       {isMinting ? (
