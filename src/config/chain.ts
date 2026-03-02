@@ -28,7 +28,7 @@ export const TOKENS: Token[] = [
   {
     symbol: "SEIS",
     name: "Seismic Token",
-    address: "0x1000000000000000000000000000000000000001",
+    address: "0xa430a9B42840b3d47b231e41f3bea3feE47d7c39",
     decimals: 18,
     color: "hsl(175, 80%, 50%)",
   },
