@@ -87,6 +87,23 @@ const DEXLayout = () => {
       <footer className="relative z-10 text-center py-4 text-xs text-muted-foreground border-t border-border/20">
         Built on Seismic Testnet • Educational Purpose Only
       </footer>
+
+      {/* Credit Footer */}
+      <div className="fixed bottom-3 left-0 right-0 z-20 flex justify-center pointer-events-none">
+        <p className="text-[11px] text-muted-foreground/40 pointer-events-auto">
+          made by .87 🌵 –{" "}
+          follow{" "}
+          <a
+            href="https://x.com/ofalamin"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline hover:text-muted-foreground/70 transition-colors"
+          >
+            @ofalamin
+          </a>
+          {" "}on X
+        </p>
+      </div>
     </div>
   );
 };
